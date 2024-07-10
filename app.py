@@ -1,139 +1,115 @@
-# Import necessary libraries
+import streamlit as st
 import pandas as pd
 import numpy as np
 import re
-from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer
 from underthesea import word_tokenize
 from sklearn.preprocessing import LabelEncoder
 from imblearn.over_sampling import SMOTE
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout
-from tensorflow.keras.callbacks import EarlyStopping
-from sklearn.metrics import classification_report
-from collections import Counter
+from tensorflow.keras.callbacks import EarlyStopping 
+from sklearn.model_selection import train_test_split
 
-# Load data
-df = pd.read_csv('./data/product_df.csv')
-df = df[['Star Rating', 'Comment']]
+@st.cache_data()
+def load_data():
+    df = pd.read_csv('./data/product_df.csv')
+    df = df[['Star Rating', 'Comment']]
+    return df
 
-# Function to label sentiment
 def label_sentiment(rating):
     if rating in [1, 2]:
-        return '0'
+        return 'Tiêu cực'
     elif rating == 3:
-        return '1'
+        return 'Trung tính'
     elif rating in [4, 5]:
-        return '2'
+        return 'Tích cực'
     else:
-        return '3'  # Out of range ratings
+        return 'Không xác định'
 
-# Apply sentiment labels to the dataset
-df['Sentiment'] = df['Star Rating'].apply(label_sentiment)
+def preprocess_data(df):
+    df['Sentiment'] = df['Star Rating'].apply(label_sentiment)
+    df = df.dropna(subset=['Comment'])
+    df = df.drop_duplicates(['Comment'])
+    df['Comment'] = df['Comment'].apply(normalize_text)
+    return df
 
-# Display first 5 rows with the new sentiment column
-print(df.head())
+def remove_special_characters(text):
+    return re.sub(r'[^a-zA-ZÀ-ỹà-ỹ0-9\s]', '', text)
 
-# Data preprocessing
-# Check and remove missing values
-print(df.isnull().sum())
-df = df.dropna(subset=['Comment'])
+def to_lowercase(text):
+    return text.lower()
 
-# Check and remove duplicate data
-duplicate_comments = df[df.duplicated(['Comment'])]
-print("Duplicate rows in 'Comment' column:")
-print(duplicate_comments)
-df = df.drop_duplicates(['Comment'])
-print("Shape after dropping duplicates:", df.shape)
-
-# Normalize and clean text
 def normalize_text(text):
-    text = re.sub(r'[^a-zA-ZÀ-ỹà-ỹ0-9\s]', '', text)  # Remove special characters
-    text = text.lower()  # Convert to lowercase
+    text = remove_special_characters(text)
+    text = to_lowercase(text)
     return text
 
-df['Comment'] = df['Comment'].apply(normalize_text)
-print(df.head())
+def tokenize_and_build_vocab_vietnamese(comment):
+    tokens = word_tokenize(comment, format="text")
+    return tokens.split()
 
-# Extract reviews X and labels y
+def train_model(X, y):
+    vectorizer = TfidfVectorizer(tokenizer=tokenize_and_build_vocab_vietnamese, token_pattern=None,
+                                 max_features=5000, ngram_range=(1, 2), max_df=0.85, min_df=5)
+    X_tfidf = vectorizer.fit_transform(X)
+    label_encoder = LabelEncoder()
+    y_encoded = label_encoder.fit_transform(y)
+
+    smote = SMOTE(random_state=42)
+    X_resampled, y_resampled = smote.fit_resample(X_tfidf, y_encoded)
+
+    X_train_temp, X_test, y_train_temp, y_test = train_test_split(X_resampled, y_resampled, test_size=0.25, random_state=42)
+    X_train, X_val, y_train, y_val = train_test_split(X_train_temp, y_train_temp, test_size=0.2, random_state=42)
+
+    model = Sequential()
+    model.add(Dense(128, activation='relu', input_shape=(X_train.shape[1],)))
+    model.add(Dropout(0.2))
+    model.add(Dense(64, activation='relu'))
+    model.add(Dropout(0.2))
+    model.add(Dense(3, activation='softmax'))
+
+    model.compile(loss='sparse_categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
+
+    model.fit(X_train.toarray(), y_train, epochs=10, batch_size=64, validation_data=(X_val.toarray(), y_val),
+              callbacks=[EarlyStopping(monitor='val_loss', patience=3, min_delta=0.0001)])
+    
+    return model, vectorizer, label_encoder
+
+# Giao diện Streamlit app
+st.title("Sentiment Analysis cho đánh giá điện thoại của TGDD")
+st.write("Nhập vào đánh giá để phân loại:")
+
+df = load_data()
+df = preprocess_data(df)
+
 X = df['Comment'].values.tolist()
 y = df['Sentiment'].values.tolist()
 
-# Tokenize, build vocabulary, and encode
-def tokenize_and_build_vocab_vietnamese(comment):
-    tokens = word_tokenize(comment, format="text")
-    return tokens.split()
+model, vectorizer, label_encoder = train_model(X, y)
 
-vectorizer = TfidfVectorizer(tokenizer=tokenize_and_build_vocab_vietnamese, token_pattern=None,
-                             max_features=5000, ngram_range=(1, 2), max_df=0.85, min_df=5)
-X_tfidf = vectorizer.fit_transform(X)
-vocabulary = vectorizer.get_feature_names_out()
+user_input = st.text_area("Nhập đánh giá sản phẩm (mỗi đánh giá một dòng)", value='', height=200)
 
-# Encode labels
-label_encoder = LabelEncoder()
-y = label_encoder.fit_transform(y)
+if st.button("Dự đoán"):
+    if user_input:
+        # Chia input thành các đánh giá khi xuống dòng
+        user_reviews = user_input.split('\n')
+        results = []
 
-# Balance data using SMOTE
-print('Before balancing:', Counter(y))
-smote = SMOTE(random_state=42)
-X_resampled, y_resampled = smote.fit_resample(X_tfidf, y)
-print('After balancing:', Counter(y_resampled))
-print('Original data size:', X_tfidf.shape)
-print('Balanced data size:', X_resampled.shape)
+        for review in user_reviews:
+            if review.strip():  # Kiểm tra xem nếu đánh giá không rỗng
+                user_input_processed = normalize_text(review)
+                user_input_tfidf = vectorizer.transform([user_input_processed]).toarray()
 
-# Split data into train, validation, and test sets
-X_train_temp, X_test, y_train_temp, y_test = train_test_split(X_resampled, y_resampled, test_size=0.25, random_state=42)
-X_train, X_val, y_train, y_val = train_test_split(X_train_temp, y_train_temp, test_size=0.2, random_state=42)
+                prediction = model.predict(user_input_tfidf)
+                predicted_label = np.argmax(prediction, axis=1)
+                predicted_sentiment = label_encoder.inverse_transform(predicted_label)
 
-# Convert sparse matrix to array
-X_train = X_train.toarray()
-X_val = X_val.toarray()
-X_test = X_test.toarray()
+                results.append(f"**Đánh giá:** {review}")
+                results.append(f"**Dự đoán đánh giá:** {predicted_sentiment[0]}")
+                results.append("")  # Dòng trống phân tách
 
-# Build and train the model
-model = Sequential()
-model.add(Dense(128, activation='relu', input_shape=(X_train.shape[1],)))
-model.add(Dropout(0.2))
-model.add(Dense(64, activation='relu'))
-model.add(Dropout(0.2))
-model.add(Dense(3, activation='softmax'))
-
-model.compile(loss='sparse_categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
-
-# Train the model with early stopping
-epochs = 10
-batch_size = 64
-history = model.fit(X_train, y_train, epochs=epochs, batch_size=batch_size, validation_data=(X_val, y_val),
-                    callbacks=[EarlyStopping(monitor='val_loss', patience=3, min_delta=0.0001)])
-
-# Evaluate the model on test set
-score = model.evaluate(X_test, y_test, verbose=1)
-print("Test Score:", score[0])
-print("Test Accuracy:", score[1])
-
-# Define preprocessing functions as before
-def normalize_text(text):
-    return re.sub(r'[^a-zA-ZÀ-ỹà-ỹ0-9\s]', '', text)
-
-def tokenize_and_build_vocab_vietnamese(comment):
-    tokens = word_tokenize(comment, format="text")
-    return tokens.split()
-
-# Test a new review
-new_review = "Shop có cho đổi điện thoại không?"
-new_review = normalize_text(new_review)
-new_review_tfidf = vectorizer.transform([new_review]).toarray()
-
-prediction = model.predict(new_review_tfidf)
-predicted_label = np.argmax(prediction, axis=1)
-predicted_sentiment = label_encoder.inverse_transform(predicted_label)
-print(f"Review: {new_review}")
-print(f"Predicted sentiment: {predicted_sentiment[0]}")
-
-# Classification report
-y_pred = model.predict(X_test)
-y_pred_classes = np.argmax(y_pred, axis=1)
-print(classification_report(y_test, y_pred_classes, target_names=label_encoder.classes_))
-
-# Save the model
-model.save('sentiment_analysis_model.h5')
+        # Kết hợp các kết quả với '\n' để đảm bảo mỗi output xuất hiện trên một dòng mới
+        st.markdown('\n'.join(results))
+    else:
+        st.write("Hãy nhập đánh giá vào đây để dự đoán.")

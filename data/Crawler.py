@@ -119,6 +119,6 @@ for item in data:
         })
 
 df = pd.DataFrame(review_data)
-df.to_csv('product_reviews2.csv', index=False, encoding='utf-8')
+df.to_csv('product_reviews.csv', index=False, encoding='utf-8')
 
 print("Đã lưu các đánh giá và số sao đã đánh giá vào file product_reviews.csv")
